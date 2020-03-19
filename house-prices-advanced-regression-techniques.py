@@ -1,95 +1,88 @@
-COMPETITON = 'house-prices-advanced-regression-techniques'
-
-import subprocess, os
-
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
 # Read the data
-train = pd.read_csv('../input/train.csv', index_col='Id')
-test = pd.read_csv('../input/test.csv', index_col='Id')
+X_full = pd.read_csv('../input/train.csv', index_col='Id')
+X_test_full = pd.read_csv('../input/test.csv', index_col='Id')
 
-lot_cols = ['LotArea','LotFrontage','MasVnrArea',]
-porch_cols = ['WoodDeckSF','OpenPorchSF','ScreenPorch','3SsnPorch','EnclosedPorch',]
-bsmt_cols = ['TotalBsmtSF','BsmtFinSF1','BsmtFinSF2','BsmtUnfSF',]
-flr_cols = ['1stFlrSF','2ndFlrSF','GrLivArea',]
-num_cols = lot_cols + bsmt_cols + flr_cols + ['GarageArea','LowQualFinSF'] + porch_cols + ['PoolArea','MiscVal',]
-cat_cols = list(set(X.columns) - set(num_cols))
+# Remove rows with missing target, separate target from predictors
+X_full.dropna(axis=0, subset=['SalePrice'], inplace=True)
+y = X_full.SalePrice
+X_full.drop(['SalePrice'], axis=1, inplace=True)
 
-print("Train set size:", train.shape)
-print("Test set size:", test.shape)
-print('START data processing', datetime.now(), )
+# Break off validation set from training data
+X_train_full, X_valid_full, y_train, y_valid = train_test_split(X_full, y, 
+                                                                train_size=0.8, test_size=0.2,
+                                                                random_state=0)
 
-train_ID = train['Id']
-test_ID = test['Id']
+# "Cardinality" means the number of unique values in a column
+# Select categorical columns with relatively low cardinality (convenient but arbitrary)
+categorical_cols = [cname for cname in X_train_full.columns if
+                    X_train_full[cname].nunique() < 10 and 
+                    X_train_full[cname].dtype == "object"]
 
-# Now drop the  'Id' colum since it's unnecessary for  the prediction process.
-train.drop(['Id'], axis=1, inplace=True)
-test.drop(['Id'], axis=1, inplace=True)
+# Select numerical columns
+numerical_cols = [cname for cname in X_train_full.columns if 
+                X_train_full[cname].dtype in ['int64', 'float64']]
 
-# Deleting outliers
-train = train[train.GrLivArea < 4500]
-train.reset_index(drop=True, inplace=True)
-
-# We use the numpy fuction log1p which  applies log(1+x) to all elements of the column
-train["SalePrice"] = np.log1p(train["SalePrice"])
-y = train.SalePrice.reset_index(drop=True)
-train_features = train.drop(['SalePrice'], axis=1)
-test_features = test
-
-features = pd.concat([train_features, test_features]).reset_index(drop=True)
-print(features.shape)
-# Some of the non-numeric predictors are stored as numbers; we convert them into strings 
-features['MSSubClass'] = features['MSSubClass'].apply(str)
-features['YrSold'] = features['YrSold'].astype(str)
-features['MoSold'] = features['MoSold'].astype(str)
-features['GarageYrBuilt'] = features['GarageYrBuilt'].astype(str)
-
-for col in num_cols:
-    if sum(features[col]==0) > 0:
-        features['has_'+col] = features[col].apply(lambda x: 1 if x>0 else 0)
-
-features['Exterior1st'] = features['Exterior1st'].fillna(features['Exterior1st'].mode()[0])
-features['Exterior2nd'] = features['Exterior2nd'].fillna(features['Exterior2nd'].mode()[0])
-features['SaleType'] = features['SaleType'].fillna(features['SaleType'].mode()[0])
-features['Functional'] = features['Functional'].fillna('Typ')
-features['Electrical'] = features['Electrical'].fillna("SBrkr")
-features['KitchenQual'] = features['KitchenQual'].fillna("TA")
-
-features[features.has_PoolArea==True]['PoolQC'].fillna('TA')
-features[features.has_PoolArea==False]['PoolQC'].fillna('None')
-
-for col in ['GarageYrBlt','GarageType', 'GarageFinish', 'GarageQual', 'GarageCond']:
-    features[col] = features[col].fillna('None')
-for col in ('BsmtQual', 'BsmtCond', 'BsmtExposure', 'BsmtFinType1', 'BsmtFinType2'):
-    features[col] = features[col].fillna('None')
-features['MSZoning'] = features.groupby(['MSSubClass'])['MSZoning'].transform(lambda x: x.fillna(x.mode()[0]))
-
-features.update(features[cat_cols].fillna('None'))
+# Keep selected columns only
+my_cols = categorical_cols + numerical_cols
+X_train = X_train_full[my_cols].copy()
+X_valid = X_valid_full[my_cols].copy()
+X_test = X_test_full[my_cols].copy()
 
 
-features['LotFrontage'] = features.groupby(['Neighborhood','LotConfig'])['LotFrontage'].transform(lambda x: x.fillna(x.mode()[0]))
-features['MasVnrArea'] = features['MasVnrArea'].fillna(0)
+## PREPROCESS AND TRAIN
 
-features['MasVnrType'][features.MasVnrArea>0] = 'BrkFace'
-features['MasVnrType'][features.MasVnrArea==0] = 'None'
-
-for col in ('GarageArea', 'GarageCars'):
-    features[col] = features[col].fillna(0)
-
-# Filling in the rest of the NA's
-
-features.update(features[num_cols].fillna(0))
-
-final_features = pd.get_dummies(features).reset_index(drop=True)
-
-X = final_features.iloc[:len(y), :]
-X_sub = final_features.iloc[len(X):, :]
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_absolute_error
 
 
+numerical_transformer = SimpleImputer(strategy='median') # Your code here
 
-submit_call = 'kaggle competitions submit {} -f {} -m {}'.format(COMPETITION, SUBMISSION, MESSAGE)
+# Preprocessing for categorical data
+categorical_transformer = Pipeline(steps = [('imputer',SimpleImputer(strategy='most_frequent')),
+                                            ('onehot', OneHotEncoder(handle_unknown='ignore',sparse=False))]) # Your code here
 
-# subprocess.check_call(submit_call)
+# numerical_transformer, categorical_transformer, model = new_pipeline(numerical_cols,categorical_cols, 
+#                                                                      best_setup['num_imputer'],
+#                                                                      best_setup['cat_imputer'],
+#                                                                      best_setup['model_setup'],
+#                                                                      components = True)
 
-num_cols = ['SalePrice','LotArea','LotFrontage','MasVnrArea','TotalBsmtSF','BsmtFinSF1','BsmtFinSF2','BsmtUnfSF','1stFlrSF','2ndFlrSF','GrLivArea','GarageArea','LowQualFinSF','WoodDeckSF','OpenPorchSF','ScreenPorch','3SsnPorch','EnclosedPorch','PoolArea','MiscVal',]
+# Bundle preprocessing for numerical and categorical data
+
+preprocessor = ColumnTransformer(
+    transformers=[
+        ('num', numerical_transformer, numerical_cols),
+        ('cat', categorical_transformer, categorical_cols)
+    ])
+
+
+# Define model
+model = RandomForestRegressor(random_state=0,n_estimators=137,min_samples_split=3,n_jobs=4) # Your code here
+
+my_pipeline = Pipeline(steps=[('preprocessor', preprocessor),
+                              ('model', model)
+                             ])
+
+# Preprocessing of training data, fit model 
+my_pipeline.fit(X_train, y_train)
+
+# Preprocessing of validation data, get predictions
+preds = my_pipeline.predict(X_valid)
+
+# Evaluate the model
+score = mean_absolute_error(y_valid, preds)
+
+my_pipeline.fit(pd.concat([X_train,X_valid]),pd.concat([y_train,y_valid]))
+preds_test = my_pipeline.predict(X_test) # Your code here
+
+
+output = pd.DataFrame({'Id': X_test.index,
+                       'SalePrice': preds_test})
+output.to_csv('submission.csv', index=False)
