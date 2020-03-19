@@ -86,5 +86,3 @@ preds_test = my_pipeline.predict(X_test) # Your code here
 output = pd.DataFrame({'Id': X_test.index,
                        'SalePrice': preds_test})
 output.to_csv('submission.csv', index=False)
-
-#boooboo
